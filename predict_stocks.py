@@ -1,228 +1,226 @@
-import numpy as np
 import yfinance as yf
-import joblib
-import os
+import pandas as pd
+import numpy as np
+from joblib import load
 from datetime import datetime, timedelta
-from stock_model import StockPredictor
+from data_preprocessor import StockDataPreprocessor
+import talib
+import warnings
+warnings.filterwarnings('ignore')
 
-def calculate_technical_indicators(prices, volumes):
-    """Calculate technical indicators for the stock data"""
-    # Calculate returns
-    returns = np.zeros_like(prices)
-    returns[1:] = (prices[1:] - prices[:-1]) / prices[:-1]
-    
-    # Calculate SMA
-    sma20 = np.array([np.mean(prices[max(0, i-20+1):i+1]) for i in range(len(prices))])
-    sma50 = np.array([np.mean(prices[max(0, i-50+1):i+1]) for i in range(len(prices))])
-    
-    # Calculate Bollinger Bands
-    bb_middle = sma20
-    rolling_std = np.array([np.std(prices[max(0, i-20+1):i+1]) for i in range(len(prices))])
-    bb_upper = bb_middle + (rolling_std * 2)
-    bb_lower = bb_middle - (rolling_std * 2)
-    
-    # Calculate MACD
-    ema12 = np.zeros_like(prices)
-    ema26 = np.zeros_like(prices)
-    ema12[0] = prices[0]
-    ema26[0] = prices[0]
-    for i in range(1, len(prices)):
-        ema12[i] = (prices[i] * 2/(12+1)) + (ema12[i-1] * (1 - 2/(12+1)))
-        ema26[i] = (prices[i] * 2/(26+1)) + (ema26[i-1] * (1 - 2/(26+1)))
-    macd = ema12 - ema26
-    signal_line = np.zeros_like(macd)
-    signal_line[0] = macd[0]
-    for i in range(1, len(macd)):
-        signal_line[i] = (macd[i] * 2/(9+1)) + (signal_line[i-1] * (1 - 2/(9+1)))
-    
-    # Calculate RSI
-    deltas = np.diff(prices)
-    gains = np.zeros_like(deltas)
-    losses = np.zeros_like(deltas)
-    gains[deltas > 0] = deltas[deltas > 0]
-    losses[deltas < 0] = -deltas[deltas < 0]
-    avg_gain = np.mean(gains[:14])
-    avg_loss = np.mean(losses[:14])
-    rsi = np.zeros_like(prices)
-    if avg_loss == 0:
-        rsi[14] = 100
-    else:
-        rs = avg_gain / avg_loss
-        rsi[14] = 100 - (100 / (1 + rs))
-    for i in range(15, len(prices)):
-        avg_gain = ((avg_gain * 13) + gains[i-1]) / 14
-        avg_loss = ((avg_loss * 13) + losses[i-1]) / 14
-        if avg_loss == 0:
-            rsi[i] = 100
-        else:
-            rs = avg_gain / avg_loss
-            rsi[i] = 100 - (100 / (1 + rs))
-    
-    return returns, sma20, sma50, bb_upper, bb_lower, bb_middle, macd, signal_line, rsi
+class StockPredictor:
+    def __init__(self):
+        # Load trained models
+        self.rf_model = load('trained_models/rf_model.joblib')
+        self.xgb_model = load('trained_models/xgb_model.joblib')
+        self.gb_model = load('trained_models/gb_model.joblib')
+        self.ensemble_model = load('trained_models/ensemble_model.joblib')
+        self.preprocessor = StockDataPreprocessor()
+        
+        # Top 50 stocks to analyze as per project requirements
+        self.stocks = [
+            # Technology
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'ADBE', 'NFLX', 'CRM', 'INTC', 'CSCO',
+            # Financial
+            'JPM', 'BAC', 'GS', 'MS', 'V', 'MA', 'AXP', 'BLK',
+            # Healthcare
+            'JNJ', 'PFE', 'UNH', 'ABT', 'MRK', 'TMO',
+            # Consumer
+            'WMT', 'PG', 'KO', 'PEP', 'HD', 'MCD', 'NKE', 'SBUX',
+            # Industrial
+            'CAT', 'BA', 'HON', 'MMM', 'UPS', 'FDX',
+            # Energy
+            'XOM', 'CVX', 'COP',
+            # Communication
+            'VZ', 'T', 'CMCSA',
+            # Others
+            'DIS', 'NEE', 'RTX', 'LMT'
+        ]
 
-def prepare_stock_features(data):
-    """Prepare features for prediction using numpy arrays"""
-    # Extract basic features
-    closes = data[:, 4].astype(float)
-    volumes = data[:, 5].astype(float)
-    returns = np.zeros_like(closes)
-    returns[1:] = (closes[1:] - closes[:-1]) / closes[:-1]
-    
-    # Calculate SMA
-    sma20 = np.array([np.mean(closes[max(0, i-20+1):i+1]) for i in range(len(closes))])
-    sma50 = np.array([np.mean(closes[max(0, i-50+1):i+1]) for i in range(len(closes))])
-    
-    # Calculate RSI
-    deltas = np.diff(closes)
-    gains = np.zeros_like(deltas)
-    losses = np.zeros_like(deltas)
-    gains[deltas > 0] = deltas[deltas > 0]
-    losses[deltas < 0] = -deltas[deltas < 0]
-    
-    avg_gain = np.mean(gains[:14])
-    avg_loss = np.mean(losses[:14])
-    rsi = np.zeros_like(closes)
-    
-    if avg_loss == 0:
-        rsi[14] = 100
-    else:
-        rs = avg_gain / avg_loss
-        rsi[14] = 100 - (100 / (1 + rs))
-    
-    for i in range(15, len(closes)):
-        avg_gain = ((avg_gain * 13) + gains[i-1]) / 14
-        avg_loss = ((avg_loss * 13) + losses[i-1]) / 14
-        if avg_loss == 0:
-            rsi[i] = 100
-        else:
-            rs = avg_gain / avg_loss
-            rsi[i] = 100 - (100 / (1 + rs))
-    
-    # Calculate Bollinger Bands
-    bb_std = np.array([np.std(closes[max(0, i-20+1):i+1]) for i in range(len(closes))])
-    bb_upper = sma20 + (bb_std * 2)
-    bb_lower = sma20 - (bb_std * 2)
-    
-    # Create normalized features
-    def normalize(x):
-        std = np.std(x)
-        return (x - np.mean(x)) / (std if std > 0 else 1)
-    
-    features = np.column_stack([
-        normalize(closes),
-        normalize(volumes),
-        returns,  # Already normalized
-        normalize(sma20 - closes),  # Distance from SMA20
-        normalize(sma50 - closes),  # Distance from SMA50
-        rsi / 100.0,  # Scale RSI to 0-1
-        normalize(volumes - np.mean(volumes)),  # Volume trend
-        normalize(np.diff(np.append(closes, closes[-1]))),  # Price momentum
-        normalize(bb_upper - closes),  # Distance from upper BB
-        normalize(closes - bb_lower),  # Distance from lower BB
-        normalize(bb_std)  # Volatility
-    ])
-    
-    return features
+    def get_stock_data(self, symbol, days=90):
+        """Get historical stock data with enough history for technical indicators"""
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)  # Get 90 days of data for better indicators
+        
+        try:
+            stock = yf.Ticker(symbol)
+            df = stock.history(start=start_date, end=end_date, interval='1d')
+            if len(df) >= 50:  # Need at least 50 days for SMA50
+                return df
+            print(f"Warning: Insufficient data for {symbol} (only {len(df)} days)")
+            return None
+        except Exception as e:
+            print(f"Error fetching data for {symbol}: {e}")
+            return None
 
-def fetch_stock_data(symbol, period='60d'):
-    """Fetch stock data using yfinance"""
-    try:
-        stock = yf.Ticker(symbol)
-        df = stock.history(period=period)
-        if len(df) < 50:  # Need at least 50 days of data
-            print(f"Insufficient data for {symbol} (need at least 50 days)")
+    def prepare_features(self, df):
+        """Prepare features for prediction using the same features as training"""
+        # Calculate the core technical indicators used in training
+        df['SMA20'] = talib.SMA(df['Close'], timeperiod=20)
+        df['RSI'] = talib.RSI(df['Close'], timeperiod=14)
+        
+        # Calculate returns
+        df['Returns'] = df['Close'].pct_change()
+        
+        # Volume force index
+        df['Volume_Force'] = df['Volume'] * df['Returns']
+        
+        # Momentum
+        df['Momentum'] = df['Close'].pct_change(5)
+        
+        # Handle missing values
+        df = df.fillna(method='ffill').fillna(method='bfill')
+        
+        # Create final feature set matching training data
+        feature_cols = [
+            'Close',      # Price level
+            'Volume',     # Trading volume
+            'SMA20',      # Trend
+            'RSI',        # Momentum
+            'Volume_Force', # Volume & price combined
+            'Momentum'    # Price momentum
+        ]
+        
+        # Scale features using z-score normalization
+        df_features = df[feature_cols].copy()
+        df_features = (df_features - df_features.mean()) / df_features.std()
+        
+        return df_features
+
+    def predict_stock(self, symbol):
+        """Make predictions for a single stock"""
+        print(f"Processing {symbol}...")
+        
+        # Get historical data
+        df = self.get_stock_data(symbol)
+        if df is None:
             return None
         
-        # Create numpy array with required columns
-        data = []
-        for date, row in df.iterrows():
-            data.append([
-                date.strftime('%Y-%m-%d'),
-                row['Open'],
-                row['High'],
-                row['Low'],
-                row['Close'],
-                row['Volume'],
-                0.0 if len(data) == 0 else (row['Close'] - data[-1][4]) / data[-1][4]
-            ])
-        
-        return np.array(data)
-    except Exception as e:
-        print(f"Error fetching data for {symbol}: {str(e)}")
-        return None
-
-def predict_stocks(symbols, models_dir='trained_models'):
-    """Make predictions for multiple stocks using unified model"""
-    predictions = []
-    
-    # Load unified model
-    model_path = os.path.join(models_dir, 'unified_model.joblib')
-    if not os.path.exists(model_path):
-        print("Unified model not found")
-        return []
-    
-    model = joblib.load(model_path)
-    
-    for symbol in symbols:
         try:
-            # Fetch recent data
-            data = fetch_stock_data(symbol)
-            if data is None:
-                continue
-                
             # Prepare features
-            features = prepare_stock_features(data)
-            if features is None or len(features) == 0:
-                print(f"Could not prepare features for {symbol}")
-                continue
+            df_processed = self.prepare_features(df)
+            if len(df_processed) < 7:  # Need at least 7 days of data
+                return None
             
-            # Make prediction
-            prob = model.predict_proba(features)[-1]  # Get prediction for most recent day
-            stock = yf.Ticker(symbol)
-            info = stock.info
+            # Use the core features from training
+            feature_cols = [
+                'Close',      # Price level
+                'Volume',     # Trading volume
+                'SMA20',      # Trend
+                'RSI',        # Momentum
+                'Volume_Force', # Volume & price combined
+                'Momentum'    # Price momentum
+            ]
             
-            predictions.append({
-                'symbol': symbol,
-                'probability': prob[1],  # Probability of upward movement
-                'current_price': float(data[-1][4]),  # Latest closing price
-                'company_name': info.get('longName', symbol),
-                'sector': info.get('sector', 'N/A'),
-                'market_cap': info.get('marketCap', 0),
-                'pe_ratio': info.get('forwardPE', 0),
-                'volume': float(data[-1][5]),  # Latest volume
-                'sma20': float(np.mean(data[-20:, 4].astype(float))),  # 20-day moving average
-                'rsi': float(features[-1, 5] * 100)  # Last RSI value
-            })
+            # Ensure all required features are present
+            missing_cols = set(feature_cols) - set(df_processed.columns)
+            if missing_cols:
+                print(f"Warning: Missing features for {symbol}: {missing_cols}")
+                return None
             
+            # Get last 7 days of data for prediction
+            features = df_processed[feature_cols].iloc[-7:].values
+            
+            # Make predictions
+            predictions = {
+                'RF': self.rf_model.predict_proba(features)[:, 1],
+                'XGB': self.xgb_model.predict_proba(features)[:, 1],
+                'GB': self.gb_model.predict_proba(features)[:, 1],
+                'Ensemble': self.ensemble_model.predict_proba(features)[:, 1]
+            }
         except Exception as e:
-            print(f"Error processing {symbol}: {str(e)}")
-            continue
-    
-    # Sort by probability and get top 5
-    predictions.sort(key=lambda x: x['probability'], reverse=True)
-    return predictions[:5]
+            print(f"Error processing {symbol}: {e}")
+            return None
+        
+        # Calculate average score
+        avg_score = np.mean([predictions[model][-1] for model in predictions])
+        
+        # Get price movement
+        price_change = ((df['Close'].iloc[-1] - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
+        
+        return {
+            'symbol': symbol,
+            'current_price': df['Close'].iloc[-1],
+            'price_change': price_change,
+            'prediction_score': avg_score,
+            'future_predictions': predictions['Ensemble'],
+            'confidence': np.std([predictions[model][-1] for model in predictions]) * -1 + 1  # Higher when models agree
+        }
+
+    def get_top_predictions(self, top_n=5):
+        """Get predictions for top N stocks"""
+        predictions = []
+        
+        print("\nAnalyzing stocks...")
+        print("This may take a few minutes as we process technical indicators...\n")
+        
+        for symbol in self.stocks:
+            result = self.predict_stock(symbol)
+            if result:
+                predictions.append(result)
+                
+        if not predictions:
+            print("\nNo valid predictions could be generated. Please check data availability.")
+            return []
+        
+        # Sort by prediction score and confidence
+        predictions.sort(key=lambda x: (x['prediction_score'] * x['confidence']), reverse=True)
+        
+        return predictions[:top_n]
+
+    def print_predictions(self, predictions):
+        """Print formatted predictions with detailed analysis"""
+        if not predictions:
+            return
+            
+        print("\n" + "=" * 50)
+        print("Top 5 Stock Predictions for", datetime.now().strftime('%Y-%m-%d'))
+        print("=" * 50)
+        print("\nRanked by prediction confidence and technical analysis")
+        print("Predictions based on 90 days of historical data")
+        print("Using ensemble of RF, XGB, and GB models\n")
+        
+        for pred in predictions:
+            print(f"\nStock: {pred['symbol']}")
+            print(f"Current Price: ${pred['current_price']:.2f}")
+            print(f"24h Change: {pred['price_change']:.2f}%")
+            
+            # Color-coded prediction score
+            score = pred['prediction_score']
+            if score >= 0.7:
+                strength = "Strong Buy"
+            elif score >= 0.6:
+                strength = "Buy"
+            elif score >= 0.4:
+                strength = "Hold"
+            else:
+                strength = "Neutral"
+            
+            print(f"Signal Strength: {strength}")
+            print(f"Prediction Score: {score:.2%}")
+            print(f"Model Confidence: {pred['confidence']:.2%}")
+            
+            print("\nNext 7 Days Prediction Trend:")
+            scores = pred['future_predictions']
+            
+            # Get dates for next 7 days
+            today = datetime.now()
+            dates = [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(1, 8)]
+            trend = 'Upward' if scores[-1] > scores[0] else 'Downward'
+            volatility = np.std(scores)
+            
+            print(f"Trend Direction: {trend}")
+            print(f"Trend Volatility: {volatility*100:.2f}%")
+            print("\nDaily Predictions:")
+            for date, score in zip(dates, scores):
+                print(f"{date}: {score*100:.2f}%")
+            
+            print("-" * 50)
 
 def main():
-    # List of stocks to predict (same as training)
-    symbols = [
-        'AAPL', 'GOOGL', 'MSFT', 'AMZN', 'META', 'NVDA'
-    ]
-    
-    print("\nFetching current data and making predictions...")
-    predictions = predict_stocks(symbols)
-    
-    print("\nTop 5 Stock Predictions:")
-    print("=======================")
-    for i, pred in enumerate(predictions, 1):
-        print(f"{i}. {pred['company_name']} ({pred['symbol']})")
-        print(f"   Sector: {pred['sector']}")
-        print(f"   Current Price: ${pred['current_price']:,.2f}")
-        print(f"   Market Cap: ${pred['market_cap']:,.0f}")
-        print(f"   P/E Ratio: {pred['pe_ratio']:.2f}")
-        print(f"   Daily Volume: {pred['volume']:,.0f}")
-        print(f"   Upward Movement Probability: {pred['probability']*100:.1f}%")
-        print("   " + "="*50)
-        print()
+    predictor = StockPredictor()
+    predictions = predictor.get_top_predictions()
+    predictor.print_predictions(predictions)
 
 if __name__ == "__main__":
     main()

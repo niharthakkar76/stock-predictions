@@ -3,6 +3,8 @@ import csv
 import os
 from datetime import datetime, timedelta
 import yfinance as yf
+import pandas as pd
+import requests
 
 class StockDataCollector:
     def __init__(self):
@@ -10,30 +12,19 @@ class StockDataCollector:
         if not os.path.exists(self.data_dir):
             os.makedirs(self.data_dir)
         
-        # Additional 50 diverse companies not in our existing dataset
-        self.symbols = [
-            # Healthcare & Biotech
-            'UNH', 'PFE', 'NVO', 'AZN', 'NVS', 'GILD', 'REGN', 'VRTX', 'BIIB',
-            # Finance & Fintech
-            'BRK-B', 'BAC', 'C', 'GS', 'BLK', 'SCHW', 'AXP', 'SPGI', 'COIN',
-            # Consumer & Retail
-            'NKE', 'SBUX', 'TGT', 'HD', 'LOW', 'LULU', 'EL', 'ULTA', 'DG',
-            # Industrial & Manufacturing
-            'GE', 'MMM', 'BA', 'LMT', 'NOC', 'ROP', 'ETN', 'EMR',
-            # Energy & Clean Tech
-            'NEE', 'ENPH', 'SEDG', 'BE', 'PLUG',
-            # Real Estate & Infrastructure
-            'AMT', 'PLD', 'CCI', 'DLR',
-            # Materials & Chemicals
-            'LIN', 'APD', 'ECL', 'DD',
-            # Transportation & Logistics
-            'UPS', 'FDX', 'UAL', 'DAL'
-        ]
+        # Get S&P 500 symbols
+        sp500_url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+        sp500_table = pd.read_html(sp500_url)
+        self.symbols = sp500_table[0]['Symbol'].tolist()
+        
+        # Clean up symbols (remove special characters and normalize)
+        self.symbols = [symbol.replace('.', '-') for symbol in self.symbols]
+        print(f'Found {len(self.symbols)} S&P 500 companies')
 
     def download_stock_data(self, symbol, period='2y'):
         """Download stock data using yfinance and save as numpy arrays in CSV"""
         try:
-            # Download data
+            # Download data using yfinance
             stock = yf.Ticker(symbol)
             df = stock.history(period=period)
             

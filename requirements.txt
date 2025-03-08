@@ -6,3 +6,5 @@ joblib
 xgboost
 yfinance
 scipy
+pandas_datareader
+lxml
