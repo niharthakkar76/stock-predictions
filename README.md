@@ -1,43 +1,50 @@
-# Stock Market Prediction System
+# Stock Trading Predictor (STP)
 
-A machine learning-based system for predicting stock market movements using technical indicators and ensemble learning. The system uses NumPy for efficient data processing and combines multiple models for robust predictions.
+A sophisticated machine learning system for stock market prediction using ensemble methods and technical analysis. The system combines multiple advanced models and technical indicators to generate daily trading signals.
 
-## Features
+## Key Features
 
-- Data processing using pure NumPy (no pandas dependency)
-- Technical indicators calculation:
-  - Simple Moving Averages (20 and 50-day)
+- **Real-time Data Collection**
+  - Automated data fetching using yfinance
+  - Support for 50+ major stocks across sectors
+  - Historical and real-time price data
+
+- **Advanced Technical Analysis**
+  - Simple Moving Averages (SMA20, SMA50)
   - Relative Strength Index (RSI)
   - Bollinger Bands
-- Ensemble model combining:
-  - Random Forest
-  - XGBoost
-  - Gradient Boosting
-- Real-time stock data fetching using yfinance
-- Normalized feature engineering
-- Support for multiple stocks
+  - Volume Force Index
+  - Price Momentum
+  - Custom momentum indicators
+
+- **Ensemble Learning Model**
+  - RandomForest (1000 trees)
+  - XGBoost (1000 trees)
+  - Gradient Boosting (1000 trees)
+  - Voting Classifier for final predictions
 
 ## Project Structure
 
 ```
-.
-├── README.md
-├── requirements.txt
-├── stock_model.py      # Core model implementation
-├── predict_stocks.py   # Prediction script
-├── stock_data/        # Directory for processed stock data
-└── trained_models/    # Directory for saved models
+├── data_collector.py      # Stock data collection and processing
+├── data_preprocessor.py   # Feature engineering and data cleaning
+├── predict_stocks.py      # Main prediction interface
+├── stock_model.py         # Model implementation
+├── requirements.txt       # Project dependencies
+├── stock_data/           # Stock data storage
+├── processed_data/       # Processed features
+└── trained_models/       # Saved model files
 ```
 
 ## Installation
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
-cd stock-prediction
+git clone https://github.com/SHIV000000/spmm.git
+cd spmm
 ```
 
-2. Create a virtual environment (recommended):
+2. Create and activate virtual environment:
 ```bash
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
@@ -50,101 +57,87 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Training the Model
+### Collecting Data
+```bash
+python data_collector.py
+```
+This will:
+- Fetch historical data for all configured stocks
+- Calculate technical indicators
+- Save processed data to stock_data directory
 
-To train a new model:
-
+### Training Models
 ```bash
 python stock_model.py
 ```
-
 This will:
-1. Download historical data for configured stocks
-2. Process and calculate technical indicators
-3. Train an ensemble model
-4. Save the model to `trained_models/unified_model.joblib`
+- Load processed stock data
+- Train ensemble models with optimized parameters
+- Save trained models to trained_models directory
 
 ### Making Predictions
-
-To get predictions for stocks:
-
 ```bash
 python predict_stocks.py
 ```
-
 This will:
-1. Fetch current market data for configured stocks
-2. Calculate technical indicators
-3. Make predictions using the trained model
-4. Display top 5 stocks with highest upward movement probability
+- Load latest stock data
+- Generate predictions for next 7 days
+- Display results with confidence scores
 
-## Model Details
+## Technical Implementation
 
-The system uses an ensemble of three models:
+### Data Processing
+- Missing value handling with rolling window means
+- Outlier removal using z-score method (threshold=3)
+- Feature scaling with RobustScaler
+- Technical indicators and derived features
 
-1. **Random Forest Classifier**
-   - 1000 estimators
-   - Max depth: 10
-   - Balanced class weights
+### Model Architecture
+- **RandomForestClassifier**
+  - 1000 trees with balanced subsample weighting
+  - Max depth: 10
+  - Bootstrap sampling
 
-2. **XGBoost Classifier**
-   - 1000 estimators
-   - Learning rate: 0.005
-   - Max depth: 7
+- **XGBoostClassifier**
+  - 1000 trees with class weight balancing
+  - Learning rate: 0.005
+  - Max depth: 7
+  - L1/L2 regularization
 
-3. **Gradient Boosting Classifier**
-   - 1000 estimators
-   - Learning rate: 0.005
-   - Max depth: 7
+- **GradientBoostingClassifier**
+  - 1000 trees with validation-based early stopping
+  - Learning rate: 0.005
+  - Subsample ratio: 0.8
 
-Features used for prediction:
-- Closing prices (normalized)
-- Trading volumes (normalized)
-- Price returns
+### Feature Engineering
+- Price-based features:
+  * Close price
+  * Price range percentage
+  * Price momentum
+- Volume indicators:
+  * Volume
+  * Volume Force Index
+  * VWAP
 - Technical indicators:
-  - SMA20 and SMA50 distances
-  - RSI
-  - Volume trends
-  - Price momentum
-  - Bollinger Bands positions
-  - Volatility
-
-## Output Format
-
-The prediction script outputs:
-- Company name and symbol
-- Current stock price
-- Market capitalization
-- P/E ratio
-- Trading volume
-- Upward movement probability
-
-Example output:
-```
-1. NVIDIA Corporation (NVDA)
-   Sector: Technology
-   Current Price: $110.57
-   Market Cap: $2,697,907,929,088
-   P/E Ratio: 26.84
-   Daily Volume: 319,708,800
-   Upward Movement Probability: 5.3%
-```
+  * SMA20, SMA50
+  * RSI (14-period)
+  * Bollinger Bands
+  * True Range
 
 ## Dependencies
 
-- numpy
-- scikit-learn
-- xgboost
-- yfinance
-- joblib
-
-## Notes
-
-- The system uses pure NumPy for calculations to minimize dependencies
-- All features are normalized before prediction
-- The model is trained on historical data from major tech stocks
-- Predictions are based on technical indicators and do not consider fundamental analysis
+- scikit-learn: Machine learning algorithms
+- numpy: Numerical computations
+- pandas: Data manipulation
+- ta-lib: Technical analysis
+- yfinance: Stock data fetching
+- xgboost: Gradient boosting
+- joblib: Model persistence
 
 ## Disclaimer
 
-This system is for educational purposes only. Stock market predictions are inherently uncertain, and you should not make investment decisions solely based on this system's output.
+This system is for educational and research purposes only. Trading stocks carries significant risks, and no guarantee is made regarding the accuracy of predictions. Always conduct thorough research and consult with financial advisors before making investment decisions.
+
+## License
+
+MIT License
