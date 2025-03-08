@@ -22,9 +22,12 @@ wheels/
 .installed.cfg
 *.egg
 
-# Stock data and models
-stock_data/*.csv
-trained_models/*.joblib
+# Stock data and models (large files)
+stock_data/
+trained_models/
+processed_data/
+*.csv
+*.joblib
 
 # IDE
 .idea/
