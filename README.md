@@ -136,17 +136,10 @@ This will:
 
 - scikit-learn: Machine learning algorithms
 - numpy: Numerical computations
-- statsmodels: Statistical models
-- ta-lib: Technical analysis
-- yfinance: Stock data fetching
-- xgboost: Gradient boosting
-- joblib: Model persistence
-- scipy: Scientific computing
+- statsmodels: Statistical models and time series analysis
+- ta-lib: Technical analysis indicators
+- yfinance: Real-time stock data fetching
+- xgboost: Gradient boosting implementation
+- joblib: Model persistence and parallel computing
+- scipy: Scientific computing and optimization
 
-## Disclaimer
-
-This system is for educational and research purposes only. Trading stocks carries significant risks, and no guarantee is made regarding the accuracy of predictions. Always conduct thorough research and consult with financial advisors before making investment decisions.
-
-## License
-
-MIT License
