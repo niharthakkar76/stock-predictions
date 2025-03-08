@@ -87,19 +87,25 @@ This will:
 ## Technical Implementation
 
 ### Data Processing
+- Robust preprocessing with StockDataPreprocessor
 - Missing value handling with rolling window means
 - Outlier removal using z-score method (threshold=3)
 - Feature scaling with RobustScaler
-- Technical indicators and derived features
+- Data saved as SYMBOL_data.csv (e.g., AAPL_data.csv)
 
 ### Model Architecture
+- **Ensemble Approach**
+  - VotingClassifier with soft voting
+  - Combines predictions from all base models
+  - Optimized for class imbalance
+
 - **RandomForestClassifier**
   - 1000 trees with balanced subsample weighting
   - Max depth: 10
   - Bootstrap sampling
 
 - **XGBoostClassifier**
-  - 1000 trees with class weight balancing
+  - 1000 trees with class imbalance handling
   - Learning rate: 0.005
   - Max depth: 7
   - L1/L2 regularization
@@ -112,27 +118,30 @@ This will:
 ### Feature Engineering
 - Price-based features:
   * Close price
-  * Price range percentage
-  * Price momentum
+  * Price Range Percentage
+  * Price Momentum
 - Volume indicators:
   * Volume
   * Volume Force Index
-  * VWAP
+  * Volume Weighted Average Price (VWAP)
 - Technical indicators:
   * SMA20, SMA50
   * RSI (14-period)
   * Bollinger Bands
+  * MACD with Signal Line
   * True Range
+  * Custom momentum indicators
 
 ## Dependencies
 
 - scikit-learn: Machine learning algorithms
 - numpy: Numerical computations
-- pandas: Data manipulation
+- statsmodels: Statistical models
 - ta-lib: Technical analysis
 - yfinance: Stock data fetching
 - xgboost: Gradient boosting
 - joblib: Model persistence
+- scipy: Scientific computing
 
 ## Disclaimer
 
