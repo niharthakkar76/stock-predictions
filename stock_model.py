@@ -22,113 +22,170 @@ import glob
 import csv
 from datetime import datetime, timedelta
 import joblib
-import warnings
-warnings.filterwarnings('ignore')
+
+# Configure numpy random state
+np.random.seed(42)
+rng = np.random.RandomState(42)
 
 class StockPredictor:
     def __init__(self):
-        # Create base classifiers optimized for imbalanced data
+        # Initialize feature columns
+        self.feature_cols = [
+            # Technical features
+            'Returns', 'SMA20', 'SMA50', 'BB_Upper', 'BB_Lower',
+            'BB_Middle', 'MACD', 'Signal_Line', 'RSI', 'Force_Index',
+            'Volume_Ratio',
+            # Fundamental features
+            'PE_Ratio', 'PB_Ratio', 'Dividend_Yield', 'Market_Cap',
+            'Debt_To_Equity', 'ROE', 'ROA', 'Quick_Ratio', 'Beta',
+            'EPS_Growth'
+        ]
+        
+        # Initialize base classifiers with scikit-learn models
         self.rf = RandomForestClassifier(
-            n_estimators=200,  # Reduced from 2000
-            max_depth=6,    # Reduced complexity
-            min_samples_split=20,
-            min_samples_leaf=10,
-            class_weight='balanced',  # Better handling of imbalance
-            bootstrap=True,
-            max_features='sqrt',
-            n_jobs=-1,
+            n_estimators=200,
+            max_depth=6,
+            class_weight='balanced',
             random_state=42
         )
         
-        self.xgb = XGBClassifier(
-            n_estimators=200,  # Reduced from 2000
-            max_depth=4,      # Reduced complexity
-            learning_rate=0.1, # Increased for faster convergence
+        self.gb1 = GradientBoostingClassifier(
+            n_estimators=200,
+            max_depth=4,
+            learning_rate=0.1,
             subsample=0.8,
-            colsample_bytree=0.8,
-            min_child_weight=3,
-            scale_pos_weight=5,  # Adjusted for typical imbalance
-            tree_method='hist',
-            grow_policy='lossguide',
-            n_jobs=-1,
             random_state=42
         )
         
-        self.gb = GradientBoostingClassifier(
-            n_estimators=200,  # Reduced from 1500
-            max_depth=4,       # Reduced complexity
-            learning_rate=0.1,  # Increased for faster convergence
+        self.gb2 = GradientBoostingClassifier(
+            n_estimators=200,
+            max_depth=4,
+            learning_rate=0.1,
             subsample=0.8,
-            min_samples_split=20,
-            min_samples_leaf=10,
-            max_features='sqrt',
-            random_state=42
+            random_state=43
         )
         
-        # Feature selector with better feature balance
+        # Create voting classifier with weighted contributions
+        self.model = VotingClassifier(
+            estimators=[
+                ('rf', self.rf),
+                ('gb1', self.gb1),
+                ('gb2', self.gb2)
+            ],
+            voting='soft',
+            weights=[1.5, 2.5, 1.5]
+        )
+        
+        # SMOTE sampler for handling imbalanced data
+        self.sampler = SMOTE(
+            sampling_strategy=0.35,
+            random_state=42,
+            k_neighbors=5
+        )
+        
+        # Feature selector
         self.feature_selector = SelectFromModel(
             XGBClassifier(
                 n_estimators=100,
                 max_depth=4,
                 learning_rate=0.1,
                 scale_pos_weight=12,
-                colsample_bytree=0.8,  # Reduce feature dominance
-                subsample=0.8,  # More robust feature selection
-                random_state=42
+                colsample_bytree=0.8,
+                subsample=0.8,
+                random_state=42,
+                use_label_encoder=False,
+                eval_metric='logloss'
             )
         )
         
-        # Slightly increase minority samples
+        # SMOTE sampler
         self.sampler = SMOTE(
-            sampling_strategy=0.35,  # Increase minority representation
+            sampling_strategy=0.35,
             random_state=42,
             k_neighbors=5
         )
         
-        # Simplified pipelines without redundant steps
-        self.rf_pipeline = ImbPipeline([
-            ('classifier', self.rf)
-        ])
-        
-        self.xgb_pipeline = ImbPipeline([
-            ('classifier', self.xgb)
-        ])
-        
-        self.gb_pipeline = ImbPipeline([
-            ('classifier', self.gb)
-        ])
-        
-        # Ensemble with unanimous voting requirement
-        self.model = VotingClassifier(
-            estimators=[
-                ('rf', self.rf_pipeline),
-                ('xgb', self.xgb_pipeline),
-                ('gb', self.gb_pipeline)
-            ],
-            voting='soft',
-            weights=[1.5, 2, 1.5],  # Increased RF and GB weights
-            n_jobs=-1
-        )
-        
-        # Add threshold optimization
-        self.threshold = 0.5  # Will be optimized during training
-        
+        # Set up directories
         self.data_dir = 'processed_data'
-        self.scaler = StandardScaler()
         self.models_dir = 'trained_models'
-        self.is_model_trained = False
         
         # Create necessary directories
         if not os.path.exists(self.data_dir):
             os.makedirs(self.data_dir)
         if not os.path.exists(self.models_dir):
             os.makedirs(self.models_dir)
+    
+    def calculate_sma(self, prices, period):
+        """Calculate Simple Moving Average"""
+        if len(prices) < period:
+            return np.zeros_like(prices)
         
-        # Create necessary directories
-        if not os.path.exists(self.data_dir):
-            os.makedirs(self.data_dir)
-        if not os.path.exists(self.models_dir):
-            os.makedirs(self.models_dir)
+        sma = np.zeros_like(prices)
+        for i in range(period-1, len(prices)):
+            sma[i] = np.mean(prices[i-period+1:i+1])
+        sma[:period-1] = sma[period-1]  # Pad start with first valid value
+        return sma
+    
+    def calculate_ema(self, prices, period):
+        """Calculate Exponential Moving Average"""
+        if len(prices) < period:
+            return np.zeros_like(prices)
+        
+        ema = np.zeros_like(prices)
+        multiplier = 2 / (period + 1)
+        
+        # Initialize EMA with SMA
+        ema[period-1] = np.mean(prices[:period])
+        
+        # Calculate EMA
+        for i in range(period, len(prices)):
+            ema[i] = (prices[i] - ema[i-1]) * multiplier + ema[i-1]
+        
+        # Pad start with first valid value
+        ema[:period-1] = ema[period-1]
+        return ema
+    
+    def calculate_rsi(self, prices, period=14):
+        """Calculate Relative Strength Index"""
+        if len(prices) < period + 1:
+            return np.zeros_like(prices)
+        
+        # Calculate price changes
+        deltas = np.zeros_like(prices)
+        deltas[1:] = prices[1:] - prices[:-1]
+        
+        # Separate gains and losses
+        gains = np.where(deltas > 0, deltas, 0)
+        losses = np.where(deltas < 0, -deltas, 0)
+        
+        # Initialize averages
+        avg_gain = np.mean(gains[:period])
+        avg_loss = np.mean(losses[:period])
+        
+        # Calculate RSI
+        rsi = np.zeros_like(prices)
+        
+        # First RSI value
+        if avg_loss == 0:
+            rsi[period-1] = 100
+        else:
+            rs = avg_gain / avg_loss
+            rsi[period-1] = 100 - (100 / (1 + rs))
+        
+        # Calculate remaining RSI values
+        for i in range(period, len(prices)):
+            avg_gain = ((avg_gain * (period - 1) + gains[i-1]) / period)
+            avg_loss = ((avg_loss * (period - 1) + losses[i-1]) / period)
+            
+            if avg_loss == 0:
+                rsi[i] = 100
+            else:
+                rs = avg_gain / avg_loss
+                rsi[i] = 100 - (100 / (1 + rs))
+        
+        # Pad start with first valid value
+        rsi[:period-1] = rsi[period-1]
+        return rsi
         
     def optimize_threshold(self, X, y):
         """Optimize threshold with strong precision focus"""
@@ -172,12 +229,30 @@ class StockPredictor:
         """Train model with SMOTE and optimize threshold"""
         print(f"Original class distribution: {Counter(y)}")
         
+        # Feature importance analysis
+        print("\nAnalyzing feature importance...")
+        self.xgb.fit(X, y)
+        feature_cols = [
+            # Technical features
+            'Returns', 'SMA20', 'SMA50', 'BB_Upper', 'BB_Lower',
+            'BB_Middle', 'MACD', 'Signal_Line', 'RSI',
+            # Fundamental features
+            'PE_Ratio', 'PB_Ratio', 'Dividend_Yield', 'Market_Cap',
+            'Debt_To_Equity', 'ROE', 'ROA', 'Quick_Ratio', 'Beta',
+            'EPS_Growth'
+        ]
+        importances = sorted(zip(feature_cols, self.xgb.feature_importances_),
+                           key=lambda x: x[1], reverse=True)
+        print("\nTop 10 most important features:")
+        for feat, imp in importances[:10]:
+            print(f"{feat}: {imp:.4f}")
+        
         # Fit the model (SMOTE is applied within each pipeline)
         self.model.fit(X, y)
         
         # Optimize classification threshold
         self.threshold = self.optimize_threshold(X, y)
-        print(f"Optimized classification threshold: {self.threshold:.3f}")
+        print(f"\nOptimized classification threshold: {self.threshold:.3f}")
         
         return self.model
         
@@ -199,6 +274,45 @@ class StockPredictor:
                 return None, None
             
             # Convert to numpy array efficiently
+            
+            # Technical features
+            technical_features = [
+                'Returns', 'SMA20', 'SMA50', 'BB_Upper', 'BB_Lower',
+                'BB_Middle', 'MACD', 'Signal_Line', 'RSI'
+            ]
+            
+            # Fundamental features
+            fundamental_features = [
+                'PE_Ratio', 'PB_Ratio', 'Dividend_Yield', 'Market_Cap',
+                'Debt_To_Equity', 'ROE', 'ROA', 'Quick_Ratio', 'Beta',
+                'EPS_Growth'
+            ]
+            
+            # Combine all features
+            feature_columns = technical_features + fundamental_features
+            
+            # Handle missing values in fundamental data
+            for col in fundamental_features:
+                if col in df.columns:
+                    # Fill missing values with forward fill first, then backward fill
+                    df[col] = df[col].fillna(method='ffill')
+                    df[col] = df[col].fillna(method='bfill')
+                    # If still missing, use median
+                    df[col] = df[col].fillna(df[col].median())
+                    # Handle infinite values with median of non-infinite values
+                    mask = np.isinf(df[col])
+                    if mask.any():
+                        median_val = df.loc[~mask, col].median()
+                        df.loc[mask, col] = median_val
+                else:
+                    print(f"Warning: Missing fundamental feature {col}")
+                    # For missing columns, try to derive from other columns
+                    if col == 'PE_Ratio' and 'Market_Cap' in df.columns and 'EPS_Growth' in df.columns:
+                        df[col] = df['Market_Cap'] / (df['EPS_Growth'] + 1e-10)
+                    elif col == 'ROE' and 'Net_Income' in df.columns and 'Total_Equity' in df.columns:
+                        df[col] = df['Net_Income'] / (df['Total_Equity'] + 1e-10)
+                    else:
+                        df[col] = 0  # Use 0 as last resort
             data = df.to_numpy()
             
             # Check for sufficient valid data
@@ -214,287 +328,254 @@ class StockPredictor:
             print(f"Error loading {filename}: {str(e)}")
             return None
 
-    def prepare_features(self, filename):
+    def prepare_features(self, filename, df=None):
         """Prepare features using preprocessed data"""
-        # Load preprocessed data
-        result = self.load_data(filename)
-        if result is None:
-            return None, None
-        
-        data, headers = result
-        if len(data) < 50:  # Need at least 50 data points
-            print(f"Insufficient data points in {filename}")
-            return None, None
-        
-        # Extract basic features
         try:
-            # Get indices for basic columns
-            basic_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-            indices = {col: headers.index(col) for col in basic_cols}
+            # Load preprocessed data if not provided
+            if df is None:
+                df = pd.read_csv(filename)
+                if df.empty:
+                    print(f"Empty dataframe in {filename}")
+                    return None, None
             
-            # Convert columns to float arrays, replacing None with np.nan
-            opens = np.array([float(x) if x is not None else np.nan for x in data[:, indices['Open']]])
-            highs = np.array([float(x) if x is not None else np.nan for x in data[:, indices['High']]])
-            lows = np.array([float(x) if x is not None else np.nan for x in data[:, indices['Low']]])
-            closes = np.array([float(x) if x is not None else np.nan for x in data[:, indices['Close']]])
-            volumes = np.array([float(x) if x is not None else 0 for x in data[:, indices['Volume']]])
-            
-            # Remove rows where all price data is NaN
-            valid_rows = ~(np.isnan(opens) & np.isnan(highs) & np.isnan(lows) & np.isnan(closes))
-            if not np.any(valid_rows):
-                print(f"No valid price data found in {filename}")
+            # Ensure required columns exist
+            required_cols = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+            if not all(col in df.columns for col in required_cols):
+                print(f"Missing required columns in {filename}")
                 return None, None
             
-            # Filter data to keep only valid rows
-            opens = opens[valid_rows]
-            highs = highs[valid_rows]
-            lows = lows[valid_rows]
-            closes = closes[valid_rows]
-            volumes = volumes[valid_rows]
+            # Extract basic data
+            data = df[required_cols].values
+            dates = pd.to_datetime(data[:, 0])
+            opens = data[:, 1].astype(float)
+            highs = data[:, 2].astype(float)
+            lows = data[:, 3].astype(float)
+            closes = data[:, 4].astype(float)
+            volumes = data[:, 5].astype(float)
             
-            # Forward fill any remaining NaN values
-            for arr in [opens, highs, lows, closes]:
-                nan_indices = np.isnan(arr)
-                last_valid_idx = np.where(~nan_indices)[0][0]
-                arr[0:last_valid_idx] = arr[last_valid_idx]  # Fill leading NaNs
-                for i in range(last_valid_idx + 1, len(arr)):
-                    if nan_indices[i]:
-                        arr[i] = arr[i-1]
+            # Handle missing or invalid data
+            valid_mask = ~(np.isnan(opens) | np.isnan(highs) | 
+                         np.isnan(lows) | np.isnan(closes) | 
+                         np.isnan(volumes))
+            if np.sum(valid_mask) < 50:
+                print(f"Insufficient valid data in {filename}")
+                return None, None
             
-        except (ValueError, IndexError) as e:
-            print(f"Error extracting basic columns from {filename}: {str(e)}")
-            return None, None
-        
-        # Calculate returns
-        returns = np.zeros_like(closes)
-        returns[1:] = (closes[1:] - closes[:-1]) / closes[:-1]
-        
-        # Calculate technical indicators using numpy
-        def calculate_sma(data, period):
-            return np.array([np.mean(data[max(0, i-period+1):i+1]) for i in range(len(data))])
-        
-        def calculate_ema(data, period):
-            alpha = 2 / (period + 1)
-            ema = np.zeros_like(data)
-            ema[0] = data[0]
-            for i in range(1, len(data)):
-                ema[i] = alpha * data[i] + (1 - alpha) * ema[i-1]
-            return ema
-        
-        def calculate_rsi(prices, period=14):
-            if len(prices) <= period:
-                return np.zeros_like(prices)
+            # Apply mask to all data
+            dates = dates[valid_mask]
+            opens = opens[valid_mask]
+            highs = highs[valid_mask]
+            lows = lows[valid_mask]
+            closes = closes[valid_mask]
+            volumes = volumes[valid_mask]
             
-            # Calculate price changes
-            deltas = np.diff(prices)
-            gains = np.zeros_like(deltas)
-            losses = np.zeros_like(deltas)
+            # Calculate returns and technical indicators
+            returns = np.zeros_like(closes)
+            returns[1:] = (closes[1:] - closes[:-1]) / closes[:-1]
             
-            gains[deltas > 0] = deltas[deltas > 0]
-            losses[deltas < 0] = -deltas[deltas < 0]
-            
-            # Calculate initial averages
-            avg_gain = np.mean(gains[:period])
-            avg_loss = np.mean(losses[:period])
-            
-            # Calculate RSI
-            rsi = np.zeros_like(prices)
-            if avg_loss == 0:
-                rsi[period] = 100
-            else:
-                rs = avg_gain / avg_loss
-                rsi[period] = 100 - (100 / (1 + rs))
-            
-            # Calculate rest of RSI values
-            for i in range(period + 1, len(prices)):
-                avg_gain = ((avg_gain * (period - 1) + gains[i-1]) / period)
-                avg_loss = ((avg_loss * (period - 1) + losses[i-1]) / period)
+            # Calculate technical indicators with error handling
+            try:
+                sma20 = self.calculate_sma(closes, 20)
+                sma50 = self.calculate_sma(closes, 50)
+                bb_middle = sma20
+                rolling_std = np.array([np.std(closes[max(0, i-20+1):i+1]) for i in range(len(closes))])
+                bb_upper = bb_middle + (rolling_std * 2)
+                bb_lower = bb_middle - (rolling_std * 2)
                 
-                if avg_loss == 0:
-                    rsi[i] = 100
+                # MACD
+                ema12 = self.calculate_ema(closes, 12)
+                ema26 = self.calculate_ema(closes, 26)
+                macd = ema12 - ema26
+                signal_line = self.calculate_ema(macd, 9)
+                
+                # RSI and Force Index
+                rsi = self.calculate_rsi(closes)
+                force_index = returns * volumes
+                
+                # Create feature dictionary
+                feature_dict = {
+                    # Technical features
+                    'Returns': returns,
+                    'SMA20': sma20,
+                    'SMA50': sma50,
+                    'BB_Upper': bb_upper,
+                    'BB_Lower': bb_lower,
+                    'BB_Middle': bb_middle,
+                    'MACD': macd,
+                    'Signal_Line': signal_line,
+                    'RSI': rsi,
+                    'Force_Index': force_index,
+                    'Volume_Ratio': volumes / np.mean(volumes)
+                }
+            except Exception as e:
+                print(f"Error calculating technical indicators: {str(e)}")
+                return None, None
+            
+            # Add fundamental features if available
+            fundamental_features = ['PE_Ratio', 'PB_Ratio', 'Dividend_Yield', 'Market_Cap',
+                                  'Debt_To_Equity', 'ROE', 'ROA', 'Quick_Ratio', 'Beta',
+                                  'EPS_Growth']
+            
+            # Check if we have any fundamental features
+            has_fundamentals = any(col in df.columns for col in fundamental_features)
+            if not has_fundamentals:
+                print(f"Warning: No fundamental features found in {filename}")
+            
+            for col in fundamental_features:
+                if col in df.columns:
+                    # Handle missing values in fundamental data
+                    values = df[col].values[valid_mask]
+                    values = np.nan_to_num(values, nan=0.0)
+                    feature_dict[col] = values
                 else:
-                    rs = avg_gain / avg_loss
-                    rsi[i] = 100 - (100 / (1 + rs))
+                    feature_dict[col] = np.zeros_like(closes)
             
-            return rsi
+            # Create feature matrix in the same order as self.feature_cols
+            try:
+                feature_matrix = np.column_stack([feature_dict[col] for col in self.feature_cols])
+            except KeyError as e:
+                print(f"Missing feature column: {str(e)}")
+                return None, None
+            except Exception as e:
+                print(f"Error creating feature matrix: {str(e)}")
+                return None, None
+            
+            # Calculate target based on future returns
+            target = np.zeros_like(closes, dtype=int)
+            future_returns = np.zeros_like(closes)
+            for i in range(len(closes)-5):
+                future_returns[i] = (closes[i+5] - closes[i]) / closes[i]
+            target[:-5] = (future_returns[:-5] > np.percentile(future_returns[:-5], 70)).astype(int)
+            
+            return feature_matrix, target
+            
+        except Exception as e:
+            print(f"Error preparing features for {filename}: {str(e)}")
+            return None, None
+
         
-        # Calculate all technical indicators with proper padding
-        def pad_indicator(indicator, lookback):
-            # Pad the start with the first valid value
-            if len(indicator) > lookback:
-                indicator[:lookback] = indicator[lookback]
-            return indicator
+
+
+        def calculate_technical_features(closes, highs, lows, volumes):
+            """Calculate technical indicators following exchange standards"""
+            # Initialize basic features
+            returns = np.zeros_like(closes)
+            returns[1:] = (closes[1:] - closes[:-1]) / closes[:-1]
+            
+            # RSI (14-period)
+            rsi = self.calculate_rsi(closes)
+            
+            # Moving averages and Bollinger Bands
+            sma20 = self.calculate_sma(closes, 20)
+            sma50 = self.calculate_sma(closes, 50)
+            rolling_std = np.array([np.std(closes[max(0, i-20+1):i+1]) for i in range(len(closes))])
+            bb_upper = sma20 + (rolling_std * 2)
+            bb_lower = sma20 - (rolling_std * 2)
+            
+            # MACD (12/26/9)
+            ema12 = self.calculate_ema(closes, 12)
+            ema26 = self.calculate_ema(closes, 26)
+            macd = ema12 - ema26
+            signal_line = self.calculate_ema(macd, 9)
+            
+            # Force Index and Volume Ratio
+            force_index = returns * volumes
+            volume_ratio = volumes / np.mean(volumes)
+            
+            return {
+                'Returns': returns,
+                'SMA20': sma20,
+                'SMA50': sma50,
+                'BB_Upper': bb_upper,
+                'BB_Lower': bb_lower,
+                'BB_Middle': sma20,
+                'MACD': macd,
+                'Signal_Line': signal_line,
+                'RSI': rsi,
+                'Force_Index': force_index,
+                'Volume_Ratio': volume_ratio
+            }
         
-        # Moving averages
-        sma20 = pad_indicator(calculate_sma(closes, 20), 20)
-        sma50 = pad_indicator(calculate_sma(closes, 50), 50)
+        def get_fundamental_features(df, valid_mask, exchange):
+            """Extract fundamental features with exchange-specific handling"""
+            fundamental_features = {
+                'PE_Ratio': {'clip': (0, 200)},           # Cap extreme ratios
+                'PB_Ratio': {'clip': (0, 50)},            # Cap extreme ratios
+                'Dividend_Yield': {'clip': (0, 0.25)},    # Cap at 25%
+                'Market_Cap': {'log': True},              # Log transform
+                'Debt_To_Equity': {'clip': (0, 10)},      # Cap extreme ratios
+                'ROE': {'clip': (-1, 1)},                # Normalize to [-100%, 100%]
+                'ROA': {'clip': (-1, 1)},                # Normalize to [-100%, 100%]
+                'Quick_Ratio': {'clip': (0, 5)},         # Cap extreme ratios
+                'Beta': {'clip': (-2, 4)},               # Typical beta range
+                'EPS_Growth': {'clip': (-1, 2)}          # Cap extreme growth
+            }
+            
+            feature_dict = {}
+            for col, params in fundamental_features.items():
+                if col in df.columns:
+                    values = df[col].values[valid_mask]
+                    values = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
+                    
+                    if params.get('log', False):
+                        # Log transform with sign preservation
+                        signs = np.sign(values)
+                        values = signs * np.log1p(np.abs(values))
+                    
+                    if 'clip' in params:
+                        values = np.clip(values, *params['clip'])
+                    
+                    feature_dict[col] = values
+                else:
+                    feature_dict[col] = np.zeros(len(valid_mask))
+            
+            return feature_dict
         
-        # Bollinger Bands
-        bb_middle = sma20
-        rolling_std = np.array([np.std(closes[max(0, i-20+1):i+1]) for i in range(len(closes))])
-        bb_upper = bb_middle + (rolling_std * 2)
-        bb_lower = bb_middle - (rolling_std * 2)
+        # Extract exchange from filename
+        exchange = os.path.basename(filename).split('_')[0] if '_' in os.path.basename(filename) else 'NYSE'
         
-        # MACD
-        ema12 = pad_indicator(calculate_ema(closes, 12), 12)
-        ema26 = pad_indicator(calculate_ema(closes, 26), 26)
-        macd = ema12 - ema26
-        signal_line = pad_indicator(calculate_ema(macd, 9), 9)
+        # Calculate technical features
+        tech_features = calculate_technical_features(closes, highs, lows, volumes)
         
-        # RSI
-        rsi = calculate_rsi(closes)
+        # Get fundamental features with exchange-specific handling
+        fund_features = get_fundamental_features(df, valid_mask, exchange)
         
-        # VWAP
-        typical_price = (highs + lows + closes) / 3
-        vwap = np.zeros_like(closes)
-        for i in range(len(closes)):
-            start_idx = max(0, i-20+1)
-            if i >= start_idx:
-                vwap[i] = np.average(typical_price[start_idx:i+1], weights=volumes[start_idx:i+1])
-            else:
-                vwap[i] = typical_price[i]
+        # Combine all features
+        feature_dict = {**tech_features, **fund_features}
         
-        # Momentum (20-day)
-        momentum = np.zeros_like(closes)
-        if len(closes) > 20:
-            momentum[20:] = closes[20:] - closes[:-20]
-            momentum[:20] = momentum[20]  # Pad with first value
-        
-        # Force Index
-        force_index = returns * volumes
-        
-        # Calculate future returns for different timeframes
-        prediction_windows = [5, 10, 20]  # Multiple timeframes for prediction
-        future_returns = np.zeros((len(closes), len(prediction_windows)))
-        
-        # Only calculate future returns if we have enough data
-        min_required = max(prediction_windows)
-        if len(closes) > min_required:
-            for i, window in enumerate(prediction_windows):
-                future_returns[:-window, i] = (closes[window:] - closes[:-window]) / closes[:-window]
+        # Create feature matrix in the same order as self.feature_cols
+        try:
+            feature_matrix = np.column_stack([feature_dict[col] for col in self.feature_cols])
             
-            # Pad the end with zeros since we can't calculate future returns there
-            future_returns[-min_required:] = 0
+            # Calculate target with exchange-specific thresholds
+            threshold_map = {
+                'NYSE': 0.70,    # More liquid, use higher threshold
+                'NASDAQ': 0.70,
+                'DOW': 0.70,
+                'FTSE': 0.65,    # Less liquid, use lower threshold
+                'DAX': 0.65
+            }
+            threshold = threshold_map.get(exchange, 0.70)
             
-            # Technical signals
-            price_above_sma = closes > sma20
+            # Calculate future returns
+            target = np.zeros_like(closes, dtype=int)
+            future_returns = np.zeros_like(closes)
+            for i in range(len(closes)-5):
+                future_returns[i] = (closes[i+5] - closes[i]) / closes[i]
             
-            # Calculate momentum percentile excluding zeros
-            nonzero_momentum = momentum[momentum != 0]
-            if len(nonzero_momentum) > 0:
-                momentum_threshold = np.percentile(nonzero_momentum, 75)
-                strong_momentum = momentum > momentum_threshold
-            else:
-                strong_momentum = np.zeros_like(momentum, dtype=bool)
+            # Set target based on exchange-specific threshold
+            target[:-5] = (future_returns[:-5] > np.percentile(future_returns[:-5], threshold * 100)).astype(int)
             
-            oversold = rsi < 30
-            
-            # Calculate volume surge with proper handling of edge cases
-            volume_means = np.array([np.mean(volumes[max(0, i-10):i+1]) for i in range(len(volumes))])
-            volume_surge = volumes > (volume_means * 1.5)
-            
-            positive_force = force_index > 0
-            
-            # Combine technical signals
-            technical_signal = ((price_above_sma & strong_momentum) | (oversold & volume_surge & positive_force))
-            
-            # Calculate target based on future returns and technical signals
-            future_return_means = np.mean(future_returns, axis=1)
-            if np.any(future_return_means != 0):
-                threshold = np.percentile(future_return_means[future_return_means != 0], 70)
-                future_return_signal = future_return_means > threshold
-            else:
-                future_return_signal = np.zeros_like(future_return_means, dtype=bool)
-            
-            target = (future_return_signal & technical_signal).astype(int)
-            target[-min_required:] = 0  # No predictions for last N days to avoid lookahead bias
-            
-            # Create feature matrix only with valid data
-            feature_matrix = np.column_stack([
-                returns, sma20, sma50,
-                bb_upper, bb_lower, bb_middle,
-                macd, signal_line, rsi,
-                momentum, force_index
-            ])
-            
-            # Check for any remaining NaN or infinite values
+            # Final validation
             if np.any(np.isnan(feature_matrix)) or np.any(np.isinf(feature_matrix)):
                 print(f"Found NaN or infinite values in features for {filename}")
                 return None, None
             
             return feature_matrix, target
-        else:
-            print(f"Insufficient data for future returns calculation in {filename}")
+            
+        except Exception as e:
+            print(f"Error creating feature matrix for {filename}: {str(e)}")
             return None, None
-        
-        # Create normalized feature matrix
-        def normalize_feature(data):
-            std = np.std(data)
-            if std == 0:
-                return np.zeros_like(data)
-            return (data - np.mean(data)) / std
-        
-        # Basic price and volume features
-        basic_features = [
-            normalize_feature(closes),
-            normalize_feature(highs),
-            normalize_feature(lows),
-            normalize_feature(volumes),
-            returns  # Already normalized
-        ]
-        
-        # Technical indicators
-        tech_features = [
-            rsi / 100.0,  # Scale RSI to 0-1
-            normalize_feature(momentum),
-            normalize_feature(force_index),
-            normalize_feature(sma20 - closes),  # Moving average crossovers
-            normalize_feature(sma50 - closes),
-            normalize_feature(bb_upper - closes),  # BB distances
-            normalize_feature(bb_lower - closes),
-            normalize_feature(macd),
-            normalize_feature(signal_line)
-        ]
-        
-        # Price patterns
-        pattern_window = 5
-        rolling_min = np.array([np.min(closes[max(0, i-pattern_window):i+1]) for i in range(len(closes))])
-        rolling_max = np.array([np.max(closes[max(0, i-pattern_window):i+1]) for i in range(len(closes))])
-        
-        pattern_features = [
-            (closes - rolling_min) / (rolling_max - rolling_min + 1e-8),  # Price position
-            (closes <= rolling_min * 1.02).astype(float),  # Near support
-            (closes >= rolling_max * 0.98).astype(float)   # Near resistance
-        ]
-        
-        # Combine all features
-        feature_matrix = np.column_stack(basic_features + tech_features + pattern_features)
-        
-        # Final validation
-        if np.any(np.isnan(feature_matrix)) or np.any(np.isinf(feature_matrix)):
-            print(f"Found invalid values in features for {filename}")
-            return None, None
-        raw_money_flow = typical_price * volumes
-        
-        mfi = np.zeros_like(closes)
-        for i in range(window, len(closes)):
-            pos_flow = np.sum(raw_money_flow[i-window:i][typical_price[i-window:i] > typical_price[i-window-1:i-1]])
-            neg_flow = np.sum(raw_money_flow[i-window:i][typical_price[i-window:i] < typical_price[i-window-1:i-1]])
-            mfi[i] = 100 - (100 / (1 + pos_flow / (neg_flow + 1e-10)))
-        
-        # On-Balance Volume (OBV)
-        obv = np.zeros_like(closes)
-        obv[1:] = np.where(closes[1:] > closes[:-1], volumes[1:],
-                          np.where(closes[1:] < closes[:-1], -volumes[1:], 0)).cumsum()
-        
-        # Combine all features into a matrix
-        feature_matrix = np.column_stack([
-            closes, highs, lows, volumes, returns,
-            rsi, momentum, force_index, sma20, sma50,
-            bb_upper, bb_lower, bb_middle, macd, signal_line,
-            vwap, near_support, near_resistance, trend_strength,
-            mfi, obv/np.mean(volumes)
-        ])
         
         # Remove any rows with NaN values
         valid_rows = ~np.isnan(feature_matrix).any(axis=1)
@@ -530,8 +611,9 @@ class StockPredictor:
             # Save the trained model and scaler
             model_path = os.path.join(self.models_dir, f'{symbol}_model.joblib')
             scaler_path = os.path.join(self.models_dir, f'{symbol}_scaler.joblib')
+            # Configure numpy random state before saving
+            np.random.set_state(rng.get_state())
             joblib.dump(self.model, model_path)
-            joblib.dump(self.scaler, scaler_path)
             print(f"Saved trained model for {symbol} to {model_path}")
             
             # Make predictions
@@ -693,14 +775,37 @@ class StockPredictor:
         class_counts = np.bincount(y)
         print(f"\nInitial class distribution: {class_counts}")
         
-        # Apply feature selection
+        # Apply feature selection while preserving fundamental features
         print("\nSelecting important features...")
         self.feature_selector.fit(X, y)
         importances = self.feature_selector.estimator_.feature_importances_
-        threshold = np.percentile(importances, 50)  # Keep top 50% features
-        feature_mask = importances >= threshold
+        
+        # Always keep fundamental features
+        fundamental_indices = [i for i, col in enumerate(self.feature_cols) 
+                             if col in ['PE_Ratio', 'PB_Ratio', 'Dividend_Yield', 'Market_Cap',
+                                       'Debt_To_Equity', 'ROE', 'ROA', 'Quick_Ratio', 'Beta',
+                                       'EPS_Growth']]
+        
+        # For technical features, keep top 50%
+        technical_indices = [i for i, col in enumerate(self.feature_cols) 
+                           if i not in fundamental_indices]
+        technical_importances = importances[technical_indices]
+        threshold = np.percentile(technical_importances, 50)
+        
+        # Create feature mask
+        feature_mask = np.zeros_like(importances, dtype=bool)
+        feature_mask[fundamental_indices] = True  # Always keep fundamental features
+        feature_mask[technical_indices] = importances[technical_indices] >= threshold
+        
         X = X[:, feature_mask]
-        print(f"Selected {np.sum(feature_mask)} features")
+        selected_features = [col for i, col in enumerate(self.feature_cols) if feature_mask[i]]
+        print(f"Selected {np.sum(feature_mask)} features:")
+        print("Fundamental features:", [f for f in selected_features if f in ['PE_Ratio', 'PB_Ratio', 'Dividend_Yield', 'Market_Cap',
+                                                                                'Debt_To_Equity', 'ROE', 'ROA', 'Quick_Ratio', 'Beta',
+                                                                                'EPS_Growth']])
+        print("Technical features:", [f for f in selected_features if f not in ['PE_Ratio', 'PB_Ratio', 'Dividend_Yield', 'Market_Cap',
+                                                                                'Debt_To_Equity', 'ROE', 'ROA', 'Quick_Ratio', 'Beta',
+                                                                                'EPS_Growth']])
         
         # Print feature importances
         sorted_idx = np.argsort(importances[feature_mask])
@@ -730,112 +835,68 @@ class StockPredictor:
         y_train, y_test = y[:split_idx], y[split_idx:]
         
         print("\nTraining models...")
-        # Train each model separately with appropriate class handling
-        for name, pipeline in [('RF', self.rf_pipeline), ('XGB', self.xgb_pipeline), ('GB', self.gb_pipeline)]:
-            print(f"\nTraining {name}...")
-            try:
-                # Basic model configurations focused on handling imbalance
-                if name == 'RF':
-                    pipeline.named_steps['classifier'].set_params(
-                        class_weight='balanced',
-                        n_estimators=200,
-                        max_depth=5,
-                        min_samples_split=10,
-                        min_samples_leaf=4
-                    )
-                elif name == 'XGB':
-                    pipeline.named_steps['classifier'].set_params(
-                        scale_pos_weight=12,
-                        max_depth=4,
-                        min_child_weight=1,
-                        learning_rate=0.1
-                    )
-                elif name == 'GB':
-                    # Improve GB performance with better params
-                    pipeline.named_steps['classifier'].set_params(
-                        n_estimators=300,
-                        max_depth=5,
-                        min_samples_leaf=5,
-                        subsample=0.8,
-                        max_features='sqrt',
-                        validation_fraction=0.1,
-                        n_iter_no_change=10,
-                        learning_rate=0.05
-                    )
-                
-                # Train model with basic configuration
-                pipeline.fit(X_train, y_train)
-                
-                # Get probabilities
-                y_pred_proba = pipeline.predict_proba(X_test)
-                
-                # Simple threshold optimization
-                thresholds = np.arange(0.3, 0.7, 0.05)
-                best_f1, best_threshold = 0, 0.5
-                
-                for threshold in thresholds:
-                    y_pred = (y_pred_proba[:, 1] >= threshold).astype(int)
-                    f1 = f1_score(y_test, y_pred)
-                    if f1 > best_f1:
-                        best_f1 = f1
-                        best_threshold = threshold
-                
-                # Final prediction with best threshold
-                y_pred = (y_pred_proba[:, 1] >= best_threshold).astype(int)
-                
-                # Calculate metrics
-                metrics = {
-                    'accuracy': accuracy_score(y_test, y_pred),
-                    'precision': precision_score(y_test, y_pred),
-                    'recall': recall_score(y_test, y_pred),
-                    'f1': f1_score(y_test, y_pred)
-                }
-                print(f"Best threshold: {best_threshold:.2f}")
-            
-            except Exception as e:
-                print(f"Error training {name}: {str(e)}")
-                continue
-            
-            print(f"{name} Performance:")
-            for metric, score in metrics.items():
-                print(f"{metric.capitalize()}: {score:.4f}")
-        
-        # Train final ensemble
-        print("\nTraining final ensemble...")
+        # Train the ensemble model
+        print("\nTraining ensemble model...")
         self.model.fit(X_train, y_train)
-        y_pred = self.model.predict(X_test)
         
-        # Calculate final metrics
-        final_metrics = {
+        # Get predictions
+        y_pred = self.model.predict(X_test)
+        y_proba = self.model.predict_proba(X_test)[:, 1]
+        
+        # Calculate metrics
+        metrics = {
             'accuracy': accuracy_score(y_test, y_pred),
             'precision': precision_score(y_test, y_pred),
             'recall': recall_score(y_test, y_pred),
             'f1': f1_score(y_test, y_pred)
         }
         
-        print("\nEnsemble Performance:")
-        for metric, score in final_metrics.items():
+        print("\nModel Performance:")
+        for metric, score in metrics.items():
             print(f"{metric.capitalize()}: {score:.4f}")
         
-        # Save models
-        print("\nSaving models...")
-        for name, pipeline in [('rf', self.rf_pipeline), ('xgb', self.xgb_pipeline), 
-                             ('gb', self.gb_pipeline), ('ensemble', self.model)]:
-            joblib.dump(pipeline, os.path.join(self.models_dir, f'{name}_model.joblib'))
+        # Save the model
+        print("\nSaving model...")
+        model_path = os.path.join(self.models_dir, 'ensemble_model.pkl')
+        with open(model_path, 'wb') as f:
+            pickle.dump(self.model, f, protocol=4)
+        print(f"Saved model to {model_path}")
         
         self.is_model_trained = True
-        return final_metrics
+        return metrics
 
     def process_stock_data(self, file_path):
         """Process a single stock's data in parallel"""
         try:
-            features, target = self.prepare_features(file_path)
+            # Extract symbol and exchange from file path
+            filename = os.path.basename(file_path)
+            if '_' in filename:
+                exchange, symbol = filename.split('_')[0:2]
+                symbol = symbol.replace('_data.csv', '')
+            else:
+                symbol = filename.replace('_data.csv', '')
+                exchange = 'NYSE'  # Default to NYSE if no exchange prefix
+            
+            # Load data with pandas
+            df = pd.read_csv(file_path)
+            if df.empty:
+                print(f"Error processing {symbol}: Empty data")
+                return None, None
+            
+            # Add exchange-specific suffix for fundamental data
+            if exchange == 'FTSE':
+                symbol = f"{symbol}.L"
+            elif exchange == 'DAX':
+                symbol = f"{symbol}.DE"
+            
+            # Prepare features
+            features, target = self.prepare_features(file_path, df)
             if features is not None and target is not None:
                 n_positive = np.sum(target)
                 if len(target) >= 100 and n_positive >= 10:
                     return features, target
+                
         except Exception as e:
-            symbol = os.path.basename(file_path).replace('_data.csv', '')
             print(f"Error processing {symbol}: {str(e)}")
         return None, None
 
